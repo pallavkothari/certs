@@ -2,8 +2,16 @@ group 'link.pallav'
 version '1.0-SNAPSHOT'
 
 apply plugin: 'java'
+apply plugin: 'application'
+mainClassName = "AcmeClient"
 
 sourceCompatibility = 1.8
+
+run {
+    if (project.hasProperty("appArgs")) {
+        args Eval.me(appArgs)
+    }
+}
 
 repositories {
     mavenCentral()

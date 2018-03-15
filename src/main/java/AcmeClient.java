@@ -1,17 +1,8 @@
-/*
- * acme4j - Java ACME client
- *
- * Copyright (C) 2015 Richard "Shred" Körber
- *   http://acme4j.shredzone.org
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- */
-
+import com.beust.jcommander.JCommander;
+import com.beust.jcommander.Parameter;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.Lists;
+import lombok.Data;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.shredzone.acme4j.*;
 import org.shredzone.acme4j.challenge.Challenge;
@@ -23,48 +14,69 @@ import org.shredzone.acme4j.util.KeyPairUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.swing.*;
 import java.io.*;
 import java.net.URI;
 import java.security.KeyPair;
 import java.security.Security;
-import java.util.Arrays;
 import java.util.Collection;
+import java.util.List;
 
 /**
  *
- * A simple client test tool.
- * <p>
- * Pass the names of the domains as parameters.
+ * Uses LetsEncrypt acme v2 with hover DNS verification to generate wildcard certs.
  *
- * @see https://github.com/shred/acme4j/blob/master/acme4j-example/src/main/java/org/shredzone/acme4j/ClientTest.java
+ * Mostly lifted straight from:
+ * https://github.com/shred/acme4j/blob/master/acme4j-example/src/main/java/org/shredzone/acme4j/ClientTest.java
  */
-public class ClientTest {
+public class AcmeClient {
 
-    public static final String LETSENCRYPT_ACME_V2_STAGING_ENDPOINT = "https://acme-staging-v02.api.letsencrypt.org/directory";
-    public static final String LETSENCRYPT_ACME_V2_PROD_ENDPOINT = "https://acme-v02.api.letsencrypt.org/directory";
-
-
-
-    // File name of the User Key Pair
-    private static final File USER_KEY_FILE = new File("user.key");
-
-    // File name of the Domain Key Pair
-    private static final File DOMAIN_KEY_FILE = new File("domain.key");
-
-    // File name of the CSR
-    private static final File DOMAIN_CSR_FILE = new File("domain.csr");
-
-    // File name of the signed certificate
-    private static final File DOMAIN_CHAIN_FILE = new File("domain-chain.crt");
+    private static final String LETSENCRYPT_ACME_V2_STAGING_ENDPOINT = "https://acme-staging-v02.api.letsencrypt.org/directory";
+    private static final String LETSENCRYPT_ACME_V2_PROD_ENDPOINT = "https://acme-v02.api.letsencrypt.org/directory";
 
     //Challenge type to be used
-    private static final ChallengeType CHALLENGE_TYPE = ChallengeType.HTTP;
+    private static final ChallengeType CHALLENGE_TYPE = ChallengeType.DNS;      // required for wildcard certs
 
     // RSA key size of generated key pairs
     private static final int KEY_SIZE = 2048;
 
-    private static final Logger LOG = LoggerFactory.getLogger(ClientTest.class);
+    private static final Logger LOG = LoggerFactory.getLogger(AcmeClient.class);
+    private static final String HOVER_USERNAME = Preconditions.checkNotNull(System.getenv("HOVER_USERNAME"), "need HOVER_USERNAME");
+    private static final String HOVER_PASSWORD = Preconditions.checkNotNull(System.getenv("HOVER_PASSWORD"), "need HOVER_PASSWORD");
+
+    // staging vs prod
+    private final Mode mode;
+
+    // File name of the User Key Pair
+    private final File USER_KEY_FILE;
+
+    // File name of the Domain Key Pair
+    private final File DOMAIN_KEY_FILE;
+
+    // File name of the CSR
+    private final File DOMAIN_CSR_FILE;
+
+    // File name of the signed certificate
+    private final File DOMAIN_CHAIN_FILE;
+
+    /**
+     * select folder to put files in based on mode
+     */
+    private File parent() {
+        File parent = new File(mode.name());
+        if (!parent.exists()) {
+            parent.mkdirs();
+        }
+        return parent;
+    }
+
+    public AcmeClient(String mode) {
+        String name = mode.toUpperCase();
+        this.mode = Mode.valueOf(name);
+        USER_KEY_FILE = new File(parent(), "user.key");
+        DOMAIN_KEY_FILE = new File(parent(), "domain.key");
+        DOMAIN_CSR_FILE = new File(parent(), "domain.csr");
+        DOMAIN_CHAIN_FILE = new File(parent(), "domain-chain.crt");
+    }
 
     private enum ChallengeType { HTTP, DNS }
 
@@ -81,7 +93,7 @@ public class ClientTest {
 
         // Create a session for Let's Encrypt.
         // Use "acme://letsencrypt.org" for production server
-        Session session = new Session(LETSENCRYPT_ACME_V2_STAGING_ENDPOINT);    // TODO arg / env var to flip this to prod?
+        Session session = new Session(mode == Mode.STAGING ? LETSENCRYPT_ACME_V2_STAGING_ENDPOINT : LETSENCRYPT_ACME_V2_PROD_ENDPOINT);
 
         // Get the Account.
         // If there is no account yet, create a new one.
@@ -140,10 +152,24 @@ public class ClientTest {
         // Write a combined file containing the certificate and chain.
         try (FileWriter fw = new FileWriter(DOMAIN_CHAIN_FILE)) {
             certificate.writeCertificate(fw);
+            LOG.info("wrote domain chain file : " + DOMAIN_CHAIN_FILE.getAbsolutePath());
         }
 
-        // That's all! Configure your web server to use the DOMAIN_KEY_FILE and
-        // DOMAIN_CHAIN_FILE for the requested domans.
+
+        summary();
+    }
+
+    private void summary() {
+        if (mode == Mode.STAGING) {
+            LOG.info("woohoo! staging certs generated. ");
+            LOG.info("review with: `openssl x509 -in domain-chain.crt -text`");
+            LOG.info("if all looks good, re-run with --mode prod");
+        } else {
+            LOG.info("Production certs generated!");
+            LOG.info("Upload the following to your app: ");
+            LOG.info("domain chain: " + DOMAIN_CHAIN_FILE.getAbsolutePath());
+            LOG.info("domain key: " + DOMAIN_KEY_FILE.getAbsolutePath());
+        }
     }
 
     /**
@@ -156,20 +182,7 @@ public class ClientTest {
      * @return User's {@link KeyPair}.
      */
     private KeyPair loadOrCreateUserKeyPair() throws IOException {
-        if (USER_KEY_FILE.exists()) {
-            // If there is a key file, read it
-            try (FileReader fr = new FileReader(USER_KEY_FILE)) {
-                return KeyPairUtils.readKeyPair(fr);
-            }
-
-        } else {
-            // If there is none, create a new key pair and save it
-            KeyPair userKeyPair = KeyPairUtils.createKeyPair(KEY_SIZE);
-            try (FileWriter fw = new FileWriter(USER_KEY_FILE)) {
-                KeyPairUtils.writeKeyPair(userKeyPair, fw);
-            }
-            return userKeyPair;
-        }
+        return loadOrCreateKeyPair(USER_KEY_FILE);
     }
 
     /**
@@ -179,14 +192,20 @@ public class ClientTest {
      * @return Domain {@link KeyPair}.
      */
     private KeyPair loadOrCreateDomainKeyPair() throws IOException {
-        if (DOMAIN_KEY_FILE.exists()) {
-            try (FileReader fr = new FileReader(DOMAIN_KEY_FILE)) {
+        return loadOrCreateKeyPair(DOMAIN_KEY_FILE);
+    }
+
+    private KeyPair loadOrCreateKeyPair(File file) throws IOException {
+        if (file.exists()) {
+            LOG.info(file.getAbsolutePath() + " exists; re-using.");
+            try (FileReader fr = new FileReader(file)) {
                 return KeyPairUtils.readKeyPair(fr);
             }
         } else {
             KeyPair domainKeyPair = KeyPairUtils.createKeyPair(KEY_SIZE);
-            try (FileWriter fw = new FileWriter(DOMAIN_KEY_FILE)) {
+            try (FileWriter fw = new FileWriter(file)) {
                 KeyPairUtils.writeKeyPair(domainKeyPair, fw);
+                LOG.info("wrote " + file.getAbsolutePath());
             }
             return domainKeyPair;
         }
@@ -314,7 +333,8 @@ public class ClientTest {
         LOG.info("Please create a file in your web server's base directory.");
         LOG.info("It must be reachable at: http://" + auth.getDomain() + "/.well-known/acme-challenge/" + challenge.getToken());
         LOG.info("File name: " + challenge.getToken());
-        LOG.info("Content: " + challenge.getAuthorization());
+        String authorization = challenge.getAuthorization();
+        LOG.info("Content: " + authorization);
         LOG.info("The file must not contain any leading or trailing whitespaces or line breaks!");
         LOG.info("If you're ready, dismiss the dialog...");
 
@@ -322,10 +342,10 @@ public class ClientTest {
         message.append("Please create a file in your web server's base directory.\n\n");
         message.append("http://").append(auth.getDomain()).append("/.well-known/acme-challenge/").append(challenge.getToken()).append("\n\n");
         message.append("Content:\n\n");
-        message.append(challenge.getAuthorization());
-        acceptChallenge(message.toString());
-
-        return challenge;
+        message.append(authorization);
+//        acceptChallenge(authorization);
+//        return challenge;
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -349,13 +369,15 @@ public class ClientTest {
 
         // Output the challenge, wait for acknowledge...
         LOG.info("Please create a TXT record:");
-        LOG.info("_acme-challenge." + auth.getDomain() + ". IN TXT " + challenge.getDigest());
+        String authDomain = auth.getDomain();
+        String challengeDigest = challenge.getDigest();
+        LOG.info("_acme-challenge." + authDomain + ". IN TXT " + challengeDigest);
         LOG.info("If you're ready, dismiss the dialog...");
 
         StringBuilder message = new StringBuilder();
         message.append("Please create a TXT record:\n\n");
-        message.append("_acme-challenge." + auth.getDomain() + ". IN TXT " + challenge.getDigest());
-        acceptChallenge(message.toString());
+        message.append("_acme-challenge." + authDomain + ". IN TXT " + challengeDigest);
+        acceptChallenge(authDomain, challengeDigest);
 
         return challenge;
     }
@@ -364,17 +386,27 @@ public class ClientTest {
      * Presents the instructions for preparing the challenge validation, and waits for
      * dismissal. If the user cancelled the dialog, an exception is thrown.
      *
-     * @param message
+     * @param auth
      *            Instructions to be shown in the dialog
      */
-    public void acceptChallenge(String message) throws AcmeException {
-        int option = JOptionPane.showConfirmDialog(null,
-                message,
-                "Prepare Challenge",
-                JOptionPane.OK_CANCEL_OPTION);
-        if (option == JOptionPane.CANCEL_OPTION) {
-            throw new AcmeException("User cancelled the challenge");
-        }
+    public void acceptChallenge(String authDomain, String challengeDigest) throws AcmeException {
+        System.out.println("... add a txt record:\n");
+        String name = "_acme-challenge." + authDomain;
+        String val = challengeDigest;
+
+        createTxtRecord(authDomain, name, val);
+
+    }
+
+    private void createTxtRecord(String authDomain, String name, String val) {
+        HoverApi api = new HoverApi(HOVER_USERNAME, HOVER_PASSWORD);
+        api.login();
+        HoverApi.DnsEntry dns = new HoverApi.DnsEntry();
+        dns.setType("TXT");
+        dns.setName(name);
+        dns.setDnsTarget(val);
+        api.addDnsEntry(authDomain, dns);
+        LOG.info("hover txt record created...");
     }
 
     /**
@@ -385,13 +417,13 @@ public class ClientTest {
      *            {@link URI} of the Terms of Service
      */
     public void acceptAgreement(URI agreement) throws AcmeException {
-        int option = JOptionPane.showConfirmDialog(null,
+        /*int option = JOptionPane.showConfirmDialog(null,
                 "Do you accept the Terms of Service?\n\n" + agreement,
                 "Accept ToS",
                 JOptionPane.YES_NO_OPTION);
         if (option == JOptionPane.NO_OPTION) {
             throw new AcmeException("User did not accept Terms of Service");
-        }
+        }*/
     }
 
     /**
@@ -401,22 +433,46 @@ public class ClientTest {
      *            Domains to get a certificate for
      */
     public static void main(String... args) {
-        if (args.length == 0) {
-            System.err.println("Usage: ClientTest <domain>...");
+
+        Args myArgs = new Args();
+        try {
+            JCommander.newBuilder().addObject(myArgs).build().parse(args);
+        } catch (Exception e) {
+            System.err.println(e.getLocalizedMessage());
+            help();
             System.exit(1);
         }
 
-        LOG.info("Starting up...");
-
+        LOG.info(myArgs.toString());
         Security.addProvider(new BouncyCastleProvider());
 
-        Collection<String> domains = Arrays.asList(args);
         try {
-            ClientTest ct = new ClientTest();
-            ct.fetchCertificate(domains);
+            AcmeClient ct = new AcmeClient(myArgs.mode);
+            ct.fetchCertificate(myArgs.domains);
         } catch (Exception ex) {
-            LOG.error("Failed to get a certificate for domains " + domains, ex);
+            LOG.error("Failed to get a certificate for domains " + myArgs.domains, ex);
         }
     }
 
+    private static void help() {
+        System.err.println("Usage: \n" +
+                "AcmeClient --mode staging --domain *.foo.org\n\n" +
+                "or with gradle:\n ./gradlew run -PappArgs=\"['--domain','*.foo.org','--mode','staging']\" \n");
+    }
+
+    @Data
+    public static final class Args {
+        @Parameter(names = {"--mode", "-m"}, description = "staging|prod")
+        private String mode;
+
+        @Parameter(names = {"--domain", "-d"}, description = "domain to request cert for (you can repeat this arg multiple times)", required = true)
+        private List<String> domains = Lists.newArrayList();
+
+        @Parameter(names = {"--help", "-h"}, help = true)
+        private boolean help;
+    }
+
+    enum Mode {
+        PROD, STAGING;
+    }
 }
