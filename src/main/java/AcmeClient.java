@@ -18,8 +18,9 @@ import java.io.*;
 import java.net.URI;
 import java.security.KeyPair;
 import java.security.Security;
-import java.util.Collection;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  *
@@ -43,6 +44,10 @@ public class AcmeClient {
     private static final String HOVER_USERNAME = Preconditions.checkNotNull(System.getenv("HOVER_USERNAME"), "need HOVER_USERNAME");
     private static final String HOVER_PASSWORD = Preconditions.checkNotNull(System.getenv("HOVER_PASSWORD"), "need HOVER_PASSWORD");
 
+    // captures subdomain if present
+    private static final String REGEX = "(.*\\.)[a-zA-Z0-9-]+\\.[a-zA-Z]{2,}";
+    private static final Pattern PATTERN = Pattern.compile(REGEX);
+
     // staging vs prod
     private final Mode mode;
 
@@ -57,6 +62,7 @@ public class AcmeClient {
 
     // File name of the signed certificate
     private final File DOMAIN_CHAIN_FILE;
+    private final Args myArgs;
 
     /**
      * select folder to put files in based on mode
@@ -69,9 +75,9 @@ public class AcmeClient {
         return parent;
     }
 
-    public AcmeClient(String mode) {
-        String name = mode.toUpperCase();
-        this.mode = Mode.valueOf(name);
+    public AcmeClient(Args myArgs) {
+        this.myArgs = myArgs;
+        this.mode = Mode.valueOf(myArgs.mode.toUpperCase());
         USER_KEY_FILE = new File(parent(), "user.key");
         DOMAIN_KEY_FILE = new File(parent(), "domain.key");
         DOMAIN_CSR_FILE = new File(parent(), "domain.csr");
@@ -84,10 +90,10 @@ public class AcmeClient {
      * Generates a certificate for the given domains. Also takes care for the registration
      * process.
      *
-     * @param domains
-     *            Domains to get a common certificate for
      */
-    public void fetchCertificate(Collection<String> domains) throws IOException, AcmeException {
+    public void fetchCertificate() throws IOException, AcmeException {
+        List<String> domains = this.myArgs.domains;
+
         // Load the user key file. If there is no key file, create a new one.
         KeyPair userKeyPair = loadOrCreateUserKeyPair();
 
@@ -405,7 +411,14 @@ public class AcmeClient {
         dns.setType("TXT");
         dns.setName(name);
         dns.setDnsTarget(val);
-        api.addDnsEntry(authDomain, dns);
+        String domain = authDomain;
+        Matcher matcher = PATTERN.matcher(authDomain);
+        if (matcher.matches()) {
+            String group = matcher.group(1);
+            domain = authDomain.substring(group.indexOf(group) + group.length());
+        }
+        LOG.info("hover domain = " + domain);
+        api.addDnsEntry(domain, dns);
         LOG.info("hover txt record created...");
     }
 
@@ -447,8 +460,8 @@ public class AcmeClient {
         Security.addProvider(new BouncyCastleProvider());
 
         try {
-            AcmeClient ct = new AcmeClient(myArgs.mode);
-            ct.fetchCertificate(myArgs.domains);
+            AcmeClient ct = new AcmeClient(myArgs);
+            ct.fetchCertificate();
         } catch (Exception ex) {
             LOG.error("Failed to get a certificate for domains " + myArgs.domains, ex);
         }

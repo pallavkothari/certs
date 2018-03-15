@@ -13,13 +13,13 @@ export HOVER_USERNAME=<hover_username>
 export HOVER_PASSWORD=<hover_password>
 
 # with gradle:
-./gradlew run -PappArgs="['*.foo.org','*.bar.com']" 
+./gradlew run -PappArgs="['--mode','staging','--domain','*.foo.org','--domain','*.bar.foo.org']" 
 
 # or without gradle; use the generated start script in the distro
 cd build/distributions 
 unzip *.zip 
 cd $(ls -d */)
-./bin/letsencrypt-wildcard-certs --mode staging --domain *.foo.org --domain *.bar.com
+./bin/letsencrypt-wildcard-certs --mode staging --domain *.foo.org --domain *.bar.foo.org
 ```
 
 ### Verify the cert chain
